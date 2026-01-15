@@ -61,7 +61,7 @@ def generate_mcq(image_bytes: bytes, mime_type: str) -> Dict[str, Any]:
             types.Content(
                 role="user",
                 parts=[
-                    types.Part.from_text(prompt),
+                    types.Part.from_text(text=prompt),
                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                 ],
             )
