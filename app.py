@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -93,11 +94,31 @@ if uploaded:
     st.image(image, caption="Image chargee", width="stretch")
     uploaded_bytes = uploaded.getvalue()
     uploaded_type = uploaded.type or "image/png"
+    uploaded_id = hashlib.sha256(uploaded_bytes).hexdigest()
 
-    if st.button("Generer le QCM", type="primary"):
+    if st.session_state.get("uploaded_id") != uploaded_id:
+        st.session_state["uploaded_id"] = uploaded_id
+        st.session_state.pop("mcq", None)
+        st.session_state.pop("checked", None)
+
+    col_generate, col_next = st.columns(2)
+    with col_generate:
+        generate_clicked = st.button("Generer le QCM", type="primary")
+    with col_next:
+        next_clicked = st.button("Nouvelle question")
+
+    if next_clicked:
+        st.session_state.pop("mcq", None)
+        st.session_state.pop("checked", None)
+        generate_clicked = True
+
+    if generate_clicked:
         with st.spinner("Analyse en cours..."):
             try:
-                mcq = generate_mcq(uploaded_bytes, uploaded_type)
+                st.session_state["mcq"] = generate_mcq(
+                    uploaded_bytes, uploaded_type
+                )
+                st.session_state["checked"] = False
             except Exception as exc:
                 message = str(exc)
                 if "429" in message or "Quota exceeded" in message:
@@ -112,6 +133,8 @@ if uploaded:
                     st.error(f"Erreur: {exc}")
                 st.stop()
 
+    if "mcq" in st.session_state:
+        mcq = st.session_state["mcq"]
         question = mcq.get("question", "").strip()
         options = mcq.get("options", [])
         correct_index = mcq.get("correct_index", None)
@@ -124,7 +147,9 @@ if uploaded:
         st.subheader("Question")
         st.write(question)
 
-        choice = st.radio("Choisis une reponse", options, index=None)
+        choice = st.radio(
+            "Choisis une reponse", options, index=None, key="current_choice"
+        )
 
         if st.button("Verifier la reponse"):
             if choice is None:
