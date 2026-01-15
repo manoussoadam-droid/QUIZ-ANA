@@ -41,16 +41,30 @@ def build_prompt() -> str:
     return (
         "Tu es un assistant qui transforme une image de QCM en JSON strict. "
         "Lis l'image et retourne uniquement un JSON valide sans texte autour. "
+        "Si l'image contient plusieurs questions, renvoie-les toutes. "
         "Schema exact:\n"
         "{\n"
-        '  "question": "string",\n'
-        '  "options": ["string", "string", "string", "string"],\n'
-        '  "correct_index": 0,\n'
-        '  "explanation": "string"\n'
+        '  "questions": [\n'
+        "    {\n"
+        '      "question": "string",\n'
+        '      "options": ["string", "string", "string", "string"],\n'
+        '      "correct_index": 0,\n'
+        '      "explanation": "string"\n'
+        "    }\n"
+        "  ]\n"
         "}\n"
         "Regles: options doit avoir 2 a 6 elements. correct_index est l'index "
-        "dans options. Si tu n'es pas sur, propose la meilleure estimation."
+        "dans options. Si une question manque d'options, propose la meilleure "
+        "estimation. Si une seule question, renvoie un tableau avec 1 element."
     )
+
+
+def normalize_mcq_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if "questions" in payload and isinstance(payload["questions"], list):
+        return payload
+    if "question" in payload:
+        return {"questions": [payload]}
+    return {"questions": []}
 
 
 def generate_mcq(image_bytes: bytes, mime_type: str) -> Dict[str, Any]:
@@ -71,7 +85,7 @@ def generate_mcq(image_bytes: bytes, mime_type: str) -> Dict[str, Any]:
     data = extract_json(response.text or "")
     if not data:
         raise ValueError("JSON non valide retourne par le modele.")
-    return data
+    return normalize_mcq_payload(data)
 
 
 st.set_page_config(page_title="QCM depuis image", page_icon="❓", layout="centered")
@@ -98,7 +112,7 @@ if uploaded:
 
     if st.session_state.get("uploaded_id") != uploaded_id:
         st.session_state["uploaded_id"] = uploaded_id
-        st.session_state.pop("mcq", None)
+        st.session_state.pop("mcq_list", None)
         st.session_state.pop("checked", None)
 
     col_generate, col_next = st.columns(2)
@@ -108,17 +122,27 @@ if uploaded:
         next_clicked = st.button("Nouvelle question")
 
     if next_clicked:
-        st.session_state.pop("mcq", None)
+        st.session_state.pop("mcq_list", None)
         st.session_state.pop("checked", None)
         generate_clicked = True
 
     if generate_clicked:
         with st.spinner("Analyse en cours..."):
             try:
-                st.session_state["mcq"] = generate_mcq(
-                    uploaded_bytes, uploaded_type
-                )
-                st.session_state["checked"] = False
+                payload = generate_mcq(uploaded_bytes, uploaded_type)
+                items = []
+                for item in payload.get("questions", []):
+                    items.append(
+                        {
+                            "question": (item.get("question") or "").strip(),
+                            "options": item.get("options") or [],
+                            "correct_index": item.get("correct_index"),
+                            "explanation": (item.get("explanation") or "").strip(),
+                            "choice": None,
+                            "checked": False,
+                        }
+                    )
+                st.session_state["mcq_list"] = items
             except Exception as exc:
                 message = str(exc)
                 if "429" in message or "Quota exceeded" in message:
@@ -133,39 +157,55 @@ if uploaded:
                     st.error(f"Erreur: {exc}")
                 st.stop()
 
-    if "mcq" in st.session_state:
-        mcq = st.session_state["mcq"]
-        question = mcq.get("question", "").strip()
-        options = mcq.get("options", [])
-        correct_index = mcq.get("correct_index", None)
-        explanation = mcq.get("explanation", "").strip()
-
-        if not question or not isinstance(options, list) or len(options) < 2:
-            st.error("Extraction invalide. Reessaie avec une image plus claire.")
+    if "mcq_list" in st.session_state:
+        if not st.session_state["mcq_list"]:
+            st.error("Aucune question detectee. Reessaie avec une image plus claire.")
             st.stop()
 
-        st.subheader("Question")
-        st.write(question)
+        for idx, item in enumerate(st.session_state["mcq_list"], start=1):
+            question = item["question"]
+            options = item["options"]
+            correct_index = item["correct_index"]
+            explanation = item["explanation"]
 
-        choice = st.radio(
-            "Choisis une reponse", options, index=None, key="current_choice"
-        )
+            if (
+                not question
+                or not isinstance(options, list)
+                or len(options) < 2
+            ):
+                st.warning(
+                    f"Question {idx} invalide. Reessaie avec une image plus claire."
+                )
+                continue
 
-        if st.button("Verifier la reponse"):
-            if choice is None:
-                st.warning("Choisis une option.")
-            else:
-                user_index = options.index(choice)
-                if user_index == correct_index:
-                    st.success("Bonne reponse !")
+            st.subheader(f"Question {idx}")
+            st.write(question)
+
+            choice = st.radio(
+                "Choisis une reponse",
+                options,
+                index=None,
+                key=f"choice_{uploaded_id}_{idx}",
+            )
+            item["choice"] = choice
+
+            if st.button("Verifier la reponse", key=f"check_{uploaded_id}_{idx}"):
+                if choice is None:
+                    st.warning("Choisis une option.")
                 else:
-                    correct_label = (
-                        options[correct_index]
-                        if isinstance(correct_index, int)
-                        and 0 <= correct_index < len(options)
-                        else "inconnue"
-                    )
-                    st.error(f"Mauvaise reponse. Bonne reponse: {correct_label}")
-                if explanation:
-                    st.info(explanation)
+                    user_index = options.index(choice)
+                    if user_index == correct_index:
+                        st.success("Bonne reponse !")
+                    else:
+                        correct_label = (
+                            options[correct_index]
+                            if isinstance(correct_index, int)
+                            and 0 <= correct_index < len(options)
+                            else "inconnue"
+                        )
+                        st.error(
+                            f"Mauvaise reponse. Bonne reponse: {correct_label}"
+                        )
+                    if explanation:
+                        st.info(explanation)
 
