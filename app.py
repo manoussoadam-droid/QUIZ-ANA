@@ -80,9 +80,32 @@ def normalize_correct_indices(value: Any) -> list[int]:
             elif isinstance(item, str) and item.isdigit():
                 indices.append(int(item))
         return indices
-    if isinstance(value, str) and value.isdigit():
-        return [int(value)]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return [int(stripped)]
+        # Support letter answers like A, B, C...
+        if len(stripped) == 1 and stripped.isalpha():
+            return [ord(stripped.upper()) - ord("A")]
     return []
+
+
+def normalize_correct_by_label(value: Any, options: list[str]) -> list[int]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        values = value
+    else:
+        values = [value]
+    normalized = []
+    for v in values:
+        if isinstance(v, str):
+            v_clean = v.strip()
+            for idx, option in enumerate(options):
+                if v_clean.lower() == str(option).strip().lower():
+                    normalized.append(idx)
+                    break
+    return normalized
 
 
 def generate_mcq(image_bytes: bytes, mime_type: str) -> Dict[str, Any]:
@@ -195,13 +218,19 @@ if selected:
                 payload = generate_mcq(selected["bytes"], selected["type"])
                 items = []
                 for item in payload.get("questions", []):
+                    options = item.get("options") or []
+                    raw_indices = item.get("correct_indices", item.get("correct_index"))
+                    indices = normalize_correct_indices(raw_indices)
+                    if not indices:
+                        indices = normalize_correct_by_label(
+                            item.get("correct_answer", item.get("answer")),
+                            options,
+                        )
                     items.append(
                         {
                             "question": (item.get("question") or "").strip(),
-                            "options": item.get("options") or [],
-                            "correct_indices": normalize_correct_indices(
-                                item.get("correct_indices", item.get("correct_index"))
-                            ),
+                            "options": options,
+                            "correct_indices": indices,
                             "explanation": (item.get("explanation") or "").strip(),
                             "choice": None,
                             "checked": False,
