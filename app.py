@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import re
@@ -118,19 +119,65 @@ if not api_key:
 
 genai_client = genai.Client(api_key=api_key)
 
-uploaded = st.file_uploader("Image de question", type=["png", "jpg", "jpeg"])
+if "files" not in st.session_state:
+    st.session_state["files"] = []
+if "selected_id" not in st.session_state:
+    st.session_state["selected_id"] = None
 
-if uploaded:
-    image = Image.open(uploaded)
-    st.image(image, caption="Image chargee", width="stretch")
-    uploaded_bytes = uploaded.getvalue()
-    uploaded_type = uploaded.type or "image/png"
-    uploaded_id = hashlib.sha256(uploaded_bytes).hexdigest()
+uploaded_files = st.file_uploader(
+    "Image de question", type=["png", "jpg", "jpeg"], accept_multiple_files=True
+)
 
-    if st.session_state.get("uploaded_id") != uploaded_id:
-        st.session_state["uploaded_id"] = uploaded_id
-        st.session_state.pop("mcq_list", None)
-        st.session_state.pop("checked", None)
+if uploaded_files:
+    existing_ids = {item["id"] for item in st.session_state["files"]}
+    for upl in uploaded_files:
+        file_bytes = upl.getvalue()
+        file_id = hashlib.sha256(file_bytes).hexdigest()
+        if file_id in existing_ids:
+            continue
+        st.session_state["files"].append(
+            {
+                "id": file_id,
+                "name": upl.name,
+                "bytes": file_bytes,
+                "type": upl.type or "image/png",
+                "mcq_list": None,
+            }
+        )
+        existing_ids.add(file_id)
+        if st.session_state["selected_id"] is None:
+            st.session_state["selected_id"] = file_id
+
+files = st.session_state["files"]
+if files:
+    st.caption("Fichiers charges")
+    cols = st.columns(len(files))
+    for idx, item in enumerate(files):
+        with cols[idx]:
+            thumb = Image.open(io.BytesIO(item["bytes"]))
+            st.image(thumb, width=120)
+            if st.button("Voir", key=f"select_{item['id']}"):
+                st.session_state["selected_id"] = item["id"]
+                st.rerun()
+            if st.button("Supprimer", key=f"delete_{item['id']}"):
+                st.session_state["files"] = [
+                    f for f in st.session_state["files"] if f["id"] != item["id"]
+                ]
+                if st.session_state["selected_id"] == item["id"]:
+                    st.session_state["selected_id"] = (
+                        st.session_state["files"][0]["id"]
+                        if st.session_state["files"]
+                        else None
+                    )
+                st.rerun()
+
+selected = next(
+    (f for f in files if f["id"] == st.session_state["selected_id"]), None
+)
+
+if selected:
+    image = Image.open(io.BytesIO(selected["bytes"]))
+    st.image(image, caption=selected["name"], width="stretch")
 
     col_generate, col_next = st.columns(2)
     with col_generate:
@@ -139,29 +186,28 @@ if uploaded:
         next_clicked = st.button("Nouvelle question")
 
     if next_clicked:
-        st.session_state.pop("mcq_list", None)
-        st.session_state.pop("checked", None)
+        selected["mcq_list"] = None
         generate_clicked = True
 
     if generate_clicked:
         with st.spinner("Analyse en cours..."):
             try:
-                payload = generate_mcq(uploaded_bytes, uploaded_type)
+                payload = generate_mcq(selected["bytes"], selected["type"])
                 items = []
                 for item in payload.get("questions", []):
                     items.append(
                         {
                             "question": (item.get("question") or "").strip(),
                             "options": item.get("options") or [],
-                        "correct_indices": normalize_correct_indices(
-                            item.get("correct_indices", item.get("correct_index"))
-                        ),
+                            "correct_indices": normalize_correct_indices(
+                                item.get("correct_indices", item.get("correct_index"))
+                            ),
                             "explanation": (item.get("explanation") or "").strip(),
                             "choice": None,
                             "checked": False,
                         }
                     )
-                st.session_state["mcq_list"] = items
+                selected["mcq_list"] = items
             except Exception as exc:
                 message = str(exc)
                 if "429" in message or "Quota exceeded" in message:
@@ -176,12 +222,12 @@ if uploaded:
                     st.error(f"Erreur: {exc}")
                 st.stop()
 
-    if "mcq_list" in st.session_state:
-        if not st.session_state["mcq_list"]:
+    if selected.get("mcq_list") is not None:
+        if not selected["mcq_list"]:
             st.error("Aucune question detectee. Reessaie avec une image plus claire.")
             st.stop()
 
-        for idx, item in enumerate(st.session_state["mcq_list"], start=1):
+        for idx, item in enumerate(selected["mcq_list"], start=1):
             question = item["question"]
             options = item["options"]
             correct_indices = item["correct_indices"]
@@ -205,7 +251,7 @@ if uploaded:
                 choice_multi = st.multiselect(
                     "Choisis une ou plusieurs reponses",
                     options,
-                    key=f"choice_multi_{uploaded_id}_{idx}",
+                    key=f"choice_multi_{selected['id']}_{idx}",
                 )
                 item["choice"] = choice_multi
             else:
@@ -213,23 +259,23 @@ if uploaded:
                     "Choisis une reponse",
                     options,
                     index=None,
-                    key=f"choice_{uploaded_id}_{idx}",
+                    key=f"choice_{selected['id']}_{idx}",
                 )
                 item["choice"] = choice_single
 
-            if st.button("Verifier la reponse", key=f"check_{uploaded_id}_{idx}"):
-                selected = item["choice"]
-                if not selected:
+            if st.button("Verifier la reponse", key=f"check_{selected['id']}_{idx}"):
+                selected_choice = item["choice"]
+                if not selected_choice:
                     st.warning("Choisis une option.")
                 else:
-                    if isinstance(selected, list):
+                    if isinstance(selected_choice, list):
                         user_indices = {
                             options.index(val)
-                            for val in selected
+                            for val in selected_choice
                             if val in options
                         }
                     else:
-                        user_indices = {options.index(selected)}
+                        user_indices = {options.index(selected_choice)}
 
                     correct_set = {
                         idx_val
