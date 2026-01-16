@@ -48,14 +48,15 @@ def build_prompt() -> str:
         "    {\n"
         '      "question": "string",\n'
         '      "options": ["string", "string", "string", "string"],\n'
-        '      "correct_index": 0,\n'
+        '      "correct_indices": [0],\n'
         '      "explanation": "string"\n'
         "    }\n"
         "  ]\n"
         "}\n"
-        "Regles: options doit avoir 2 a 6 elements. correct_index est l'index "
-        "dans options. Si une question manque d'options, propose la meilleure "
-        "estimation. Si une seule question, renvoie un tableau avec 1 element."
+        "Regles: options doit avoir 2 a 6 elements. correct_indices contient "
+        "un ou plusieurs index dans options. Si une question manque d'options, "
+        "propose la meilleure estimation. Si une seule question, renvoie un "
+        "tableau avec 1 element."
     )
 
 
@@ -65,6 +66,22 @@ def normalize_mcq_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if "question" in payload:
         return {"questions": [payload]}
     return {"questions": []}
+
+
+def normalize_correct_indices(value: Any) -> list[int]:
+    if isinstance(value, int):
+        return [value]
+    if isinstance(value, list):
+        indices: list[int] = []
+        for item in value:
+            if isinstance(item, int):
+                indices.append(item)
+            elif isinstance(item, str) and item.isdigit():
+                indices.append(int(item))
+        return indices
+    if isinstance(value, str) and value.isdigit():
+        return [int(value)]
+    return []
 
 
 def generate_mcq(image_bytes: bytes, mime_type: str) -> Dict[str, Any]:
@@ -136,7 +153,9 @@ if uploaded:
                         {
                             "question": (item.get("question") or "").strip(),
                             "options": item.get("options") or [],
-                            "correct_index": item.get("correct_index"),
+                        "correct_indices": normalize_correct_indices(
+                            item.get("correct_indices", item.get("correct_index"))
+                        ),
                             "explanation": (item.get("explanation") or "").strip(),
                             "choice": None,
                             "checked": False,
@@ -165,7 +184,7 @@ if uploaded:
         for idx, item in enumerate(st.session_state["mcq_list"], start=1):
             question = item["question"]
             options = item["options"]
-            correct_index = item["correct_index"]
+            correct_indices = item["correct_indices"]
             explanation = item["explanation"]
 
             if (
@@ -181,30 +200,52 @@ if uploaded:
             st.subheader(f"Question {idx}")
             st.write(question)
 
-            choice = st.radio(
-                "Choisis une reponse",
-                options,
-                index=None,
-                key=f"choice_{uploaded_id}_{idx}",
-            )
-            item["choice"] = choice
+            use_multi = len(correct_indices) > 1
+            if use_multi:
+                choice_multi = st.multiselect(
+                    "Choisis une ou plusieurs reponses",
+                    options,
+                    key=f"choice_multi_{uploaded_id}_{idx}",
+                )
+                item["choice"] = choice_multi
+            else:
+                choice_single = st.radio(
+                    "Choisis une reponse",
+                    options,
+                    index=None,
+                    key=f"choice_{uploaded_id}_{idx}",
+                )
+                item["choice"] = choice_single
 
             if st.button("Verifier la reponse", key=f"check_{uploaded_id}_{idx}"):
-                if choice is None:
+                selected = item["choice"]
+                if not selected:
                     st.warning("Choisis une option.")
                 else:
-                    user_index = options.index(choice)
-                    if user_index == correct_index:
+                    if isinstance(selected, list):
+                        user_indices = {
+                            options.index(val)
+                            for val in selected
+                            if val in options
+                        }
+                    else:
+                        user_indices = {options.index(selected)}
+
+                    correct_set = {
+                        idx_val
+                        for idx_val in correct_indices
+                        if 0 <= idx_val < len(options)
+                    }
+
+                    if correct_set and user_indices == correct_set:
                         st.success("Bonne reponse !")
                     else:
-                        correct_label = (
-                            options[correct_index]
-                            if isinstance(correct_index, int)
-                            and 0 <= correct_index < len(options)
-                            else "inconnue"
-                        )
+                        if correct_set:
+                            labels = ", ".join(options[i] for i in sorted(correct_set))
+                        else:
+                            labels = "inconnue"
                         st.error(
-                            f"Mauvaise reponse. Bonne reponse: {correct_label}"
+                            f"Mauvaise reponse. Bonne reponse: {labels}"
                         )
                     if explanation:
                         st.info(explanation)
